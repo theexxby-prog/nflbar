@@ -13,7 +13,7 @@ SIGN_ID="Developer ID Application"
 
 echo "==> Building release binary"
 swift build -c release --arch arm64 --arch x86_64 2>/dev/null || swift build -c release
-BIN=$(find .build -type f -name $APP -path "*release*" | head -1)
+BIN="$(swift build -c release --show-bin-path)/$APP"
 
 echo "==> Assembling $APP.app"
 rm -rf dist && mkdir -p dist/$APP.app/Contents/MacOS dist/$APP.app/Contents/Resources
