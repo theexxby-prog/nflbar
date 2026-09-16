@@ -12,7 +12,11 @@ struct NFLBarApp: App {
         MenuBarExtra {
             GameListView(store: store)
         } label: {
-            Image(systemName: "football.fill")
+            if let t = store.menuBarText {
+                Label(t, systemImage: "football.fill")
+            } else {
+                Image(systemName: "football.fill")
+            }
         }
         .menuBarExtraStyle(.window)
     }
@@ -27,10 +31,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - Model
 
 struct TeamInfo {
-    let name: String        // "Buccaneers"
-    let abbr: String        // "TB"
+    let name: String
+    let abbr: String
     let logo: URL?
-    let score: String?
+    let score: Int
+    let record: String
+    let color: Color
 }
 
 struct Game: Identifiable {
@@ -40,12 +46,15 @@ struct Game: Identifiable {
     let home: TeamInfo
     let venue: String
     let cityState: String
+    let weather: String?
     let networks: [String]
-    let state: String        // "pre", "in", "post"
-    let detail: String       // "Q2 5:31", "Final", etc.
+    let state: String        // pre / in / post
+    let detail: String       // "Q3 4:12", "Halftime", "Final"
+    let link: URL?
 
     var isLive: Bool { state == "in" }
     var isFinal: Bool { state == "post" }
+    var teams: [TeamInfo] { [away, home] }
 
     struct Stream { let name: String; let url: String }
 
@@ -73,36 +82,52 @@ struct Game: Identifiable {
     }
 }
 
+extension Color {
+    init(hex: String?, fallback: Color = .gray) {
+        guard let hex = hex, hex.count == 6, let v = UInt32(hex, radix: 16) else { self = fallback; return }
+        self = Color(red: Double((v >> 16) & 0xff) / 255,
+                     green: Double((v >> 8) & 0xff) / 255,
+                     blue: Double(v & 0xff) / 255)
+    }
+}
+
 // MARK: - ESPN decoding
 
-private struct Scoreboard: Decodable { let events: [Event] }
-private struct Event: Decodable {
+private struct Scoreboard: Decodable, Sendable { let events: [Event] }
+private struct Event: Decodable, Sendable {
     let id: String
     let date: String
     let competitions: [Competition]
+    let links: [Link]?
+    let weather: Weather?
 }
-private struct Competition: Decodable {
+private struct Link: Decodable, Sendable { let href: String }
+private struct Weather: Decodable, Sendable { let displayValue: String?; let temperature: Int? }
+private struct Competition: Decodable, Sendable {
     let venue: Venue?
     let broadcasts: [Broadcast]?
     let competitors: [Competitor]?
     let status: Status?
 }
-private struct Venue: Decodable { let fullName: String?; let address: Address? }
-private struct Address: Decodable { let city: String?; let state: String? }
-private struct Broadcast: Decodable { let names: [String] }
-private struct Competitor: Decodable {
+private struct Venue: Decodable, Sendable { let fullName: String?; let address: Address?; let indoor: Bool? }
+private struct Address: Decodable, Sendable { let city: String?; let state: String? }
+private struct Broadcast: Decodable, Sendable { let names: [String] }
+private struct Competitor: Decodable, Sendable {
     let homeAway: String
     let score: String?
     let team: Team
+    let records: [Record]?
 }
-private struct Team: Decodable {
+private struct Record: Decodable, Sendable { let type: String?; let summary: String? }
+private struct Team: Decodable, Sendable {
     let shortDisplayName: String?
     let displayName: String
     let abbreviation: String?
     let logo: String?
+    let color: String?
 }
-private struct Status: Decodable { let type: StatusType }
-private struct StatusType: Decodable { let state: String; let shortDetail: String? }
+private struct Status: Decodable, Sendable { let type: StatusType }
+private struct StatusType: Decodable, Sendable { let state: String; let shortDetail: String?; let detail: String? }
 
 // MARK: - Store
 
@@ -111,26 +136,85 @@ final class GameStore: ObservableObject {
     @Published var games: [Game] = []
     @Published var lastUpdated: Date?
     @Published var error: String?
+    @Published var favorites: Set<String> {
+        didSet { UserDefaults.standard.set(Array(favorites), forKey: "favorites") }
+    }
+    @Published var hideFinals: Bool {
+        didSet { UserDefaults.standard.set(hideFinals, forKey: "hideFinals") }
+    }
 
     private var timer: Timer?
 
     init() {
+        favorites = Set(UserDefaults.standard.stringArray(forKey: "favorites") ?? [])
+        hideFinals = UserDefaults.standard.bool(forKey: "hideFinals")
         Task { await refresh() }
-        timer = Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
+    }
+
+    func isFavorite(_ g: Game) -> Bool {
+        favorites.contains(g.away.abbr) || favorites.contains(g.home.abbr)
+    }
+
+    func toggleFavorite(_ abbr: String) {
+        if favorites.contains(abbr) { favorites.remove(abbr) } else { favorites.insert(abbr) }
+    }
+
+    var liveGames: [Game] { games.filter { $0.isLive } }
+
+    var nextGame: Game? { games.first { $0.state == "pre" } }
+
+    /// What to print in the menu bar. Favorites win; then any live game; then the next kickoff today.
+    var menuBarText: String? {
+        let live = liveGames.sorted { isFavorite($0) && !isFavorite($1) }
+        if let g = live.first {
+            return "\(g.away.abbr) \(g.away.score)–\(g.home.score) \(g.home.abbr) · \(g.detail)"
+        }
+        let upcoming = games.filter { $0.state == "pre" }.sorted { isFavorite($0) && !isFavorite($1) }
+        if let g = upcoming.first, Calendar.current.isDateInToday(g.kickoff) || isFavorite(g) && g.kickoff.timeIntervalSinceNow < 6 * 3600 {
+            let f = DateFormatter(); f.dateFormat = "h:mma"
+            return "\(g.away.abbr) @ \(g.home.abbr) \(f.string(from: g.kickoff).lowercased().replacingOccurrences(of: "m", with: ""))"
+        }
+        return nil
+    }
+
+    private func schedule() {
+        timer?.invalidate()
+        let interval: TimeInterval = liveGames.isEmpty ? 15 * 60 : 60
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             Task { await self?.refresh() }
         }
     }
 
     func refresh() async {
+        defer { schedule() }
         let fmt = DateFormatter()
         fmt.dateFormat = "yyyyMMdd"
+        fmt.timeZone = TimeZone(identifier: "America/New_York")
         let today = Date()
-        let end = Calendar.current.date(byAdding: .day, value: 4, to: today)!
-        let urlString = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=\(fmt.string(from: today))-\(fmt.string(from: end))"
+
+        // ESPN no longer reliably accepts a date range, so query each day and merge.
+        func fetchDay(_ offset: Int) async -> [Event] {
+            let d = Calendar.current.date(byAdding: .day, value: offset, to: today)!
+            let url = URL(string: "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates=\(fmt.string(from: d))")!
+            var req = URLRequest(url: url)
+            req.cachePolicy = .reloadIgnoringLocalCacheData
+            guard let (data, _) = try? await URLSession.shared.data(for: req),
+                  let board = try? JSONDecoder().decode(Scoreboard.self, from: data) else { return [] }
+            return board.events
+        }
 
         do {
-            let (data, _) = try await URLSession.shared.data(from: URL(string: urlString)!)
-            let board = try JSONDecoder().decode(Scoreboard.self, from: data)
+            var events: [Event] = []
+            await withTaskGroup(of: [Event].self) { group in
+                for i in 0...4 { group.addTask { await fetchDay(i) } }
+                for await evs in group { events += evs }
+            }
+            var seen = Set<String>()
+            events = events.filter { seen.insert($0.id).inserted }
+            if events.isEmpty && games.isEmpty {
+                throw NSError(domain: "NFLBar", code: 1, userInfo: [NSLocalizedDescriptionKey: "Couldn't reach ESPN. Check your connection and hit refresh."])
+            }
+            let board = Scoreboard(events: events)
 
             let f1 = DateFormatter(); f1.dateFormat = "yyyy-MM-dd'T'HH:mm'Z'"
             let f2 = DateFormatter(); f2.dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'"
@@ -142,7 +226,9 @@ final class GameStore: ObservableObject {
                     name: c?.team.shortDisplayName ?? c?.team.displayName ?? "?",
                     abbr: c?.team.abbreviation ?? "",
                     logo: c?.team.logo.flatMap { URL(string: $0) },
-                    score: c?.score
+                    score: Int(c?.score ?? "") ?? 0,
+                    record: c?.records?.first { $0.type == "total" }?.summary ?? "",
+                    color: Color(hex: c?.team.color)
                 )
             }
 
@@ -155,6 +241,15 @@ final class GameStore: ObservableObject {
                 let city = [comp.venue?.address?.city, comp.venue?.address?.state]
                     .compactMap { $0 }.joined(separator: ", ")
 
+                var weather: String? = nil
+                if comp.venue?.indoor != true, let w = ev.weather, let t = w.temperature {
+                    weather = "\(t)° \(w.displayValue ?? "")".trimmingCharacters(in: .whitespaces)
+                }
+
+                let state = comp.status?.type.state ?? "pre"
+                let rawDetail = comp.status?.type.shortDetail ?? ""
+                let detail = state == "post" ? "Final" : rawDetail
+
                 return Game(
                     id: ev.id,
                     kickoff: kickoff,
@@ -162,9 +257,11 @@ final class GameStore: ObservableObject {
                     home: info(comp.competitors?.first { $0.homeAway == "home" }),
                     venue: comp.venue?.fullName ?? "TBD",
                     cityState: city,
+                    weather: weather,
                     networks: comp.broadcasts?.flatMap { $0.names } ?? [],
-                    state: comp.status?.type.state ?? "pre",
-                    detail: comp.status?.type.shortDetail ?? ""
+                    state: state,
+                    detail: detail,
+                    link: ev.links?.first.flatMap { URL(string: $0.href) }
                 )
             }
             .sorted { $0.kickoff < $1.kickoff }
@@ -176,7 +273,7 @@ final class GameStore: ObservableObject {
     }
 }
 
-// MARK: - Views
+// MARK: - List
 
 struct GameListView: View {
     @ObservedObject var store: GameStore
@@ -184,9 +281,13 @@ struct GameListView: View {
     private struct Slot: Identifiable { let id: Date; let games: [Game] }
     private struct Day: Identifiable { let id: Date; let slots: [Slot] }
 
+    private var visibleGames: [Game] {
+        store.games.filter { !($0.isFinal && store.hideFinals) && !$0.isLive }
+    }
+
     private var days: [Day] {
         let cal = Calendar.current
-        let byDay = Dictionary(grouping: store.games) { cal.startOfDay(for: $0.kickoff) }
+        let byDay = Dictionary(grouping: visibleGames) { cal.startOfDay(for: $0.kickoff) }
         return byDay.keys.sorted().map { d in
             let bySlot = Dictionary(grouping: byDay[d]!) { $0.kickoff }
             return Day(id: d, slots: bySlot.keys.sorted().map { Slot(id: $0, games: bySlot[$0]!) })
@@ -196,15 +297,27 @@ struct GameListView: View {
     private var popoverHeight: CGFloat {
         let ds = days
         let slots = ds.reduce(0) { $0 + $1.slots.count }
-        let rows = CGFloat(store.games.count) * 60 + CGFloat(ds.count) * 34 + CGFloat(slots) * 26 + 100
-        return min(640, max(140, rows))
+        let live = store.liveGames.count
+        let rows = CGFloat(visibleGames.count + live) * 66
+            + CGFloat(ds.count + (live > 0 ? 1 : 0)) * 34
+            + CGFloat(slots) * 26 + 110
+        return min(660, max(160, rows))
+    }
+
+    private var countdown: String? {
+        guard store.liveGames.isEmpty, let g = store.nextGame else { return nil }
+        let secs = Int(g.kickoff.timeIntervalSinceNow)
+        guard secs > 0 else { return nil }
+        let h = secs / 3600, m = (secs % 3600) / 60
+        let when = h > 24 ? "in \(h / 24)d \(h % 24)h" : h > 0 ? "in \(h)h \(m)m" : "in \(m)m"
+        return "Next: \(g.away.name) @ \(g.home.name) \(when)"
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("NFL").font(.system(size: 14, weight: .bold))
-                Text("next 5 days").font(.system(size: 12)).foregroundColor(.secondary)
+                Text(countdown ?? "next 5 days").font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
                 Spacer()
                 Button { Task { await store.refresh() } } label: {
                     Image(systemName: "arrow.clockwise").font(.system(size: 12))
@@ -215,7 +328,7 @@ struct GameListView: View {
 
             Divider()
 
-            if let err = store.error {
+            if let err = store.error, store.games.isEmpty {
                 Text(err).foregroundColor(.red).font(.caption).padding(14)
                 Spacer()
             } else if store.games.isEmpty {
@@ -224,6 +337,17 @@ struct GameListView: View {
             } else {
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
+                        if !store.liveGames.isEmpty {
+                            HStack(spacing: 6) {
+                                PulsingDot()
+                                Text("LIVE NOW").font(.system(size: 11, weight: .bold)).foregroundColor(.red)
+                            }
+                            .padding(.top, 12).padding(.bottom, 4).padding(.horizontal, 14)
+                            ForEach(store.liveGames) { g in
+                                GameRow(game: g, store: store)
+                                    .padding(.horizontal, 10).padding(.vertical, 3)
+                            }
+                        }
                         ForEach(days) { day in
                             Text(dayLabel(day.id))
                                 .font(.system(size: 11, weight: .bold))
@@ -235,8 +359,8 @@ struct GameListView: View {
                                     .foregroundColor(.orange)
                                     .padding(.top, 6).padding(.bottom, 2).padding(.horizontal, 14)
                                 ForEach(slot.games) { g in
-                                    GameRow(game: g)
-                                        .padding(.horizontal, 14).padding(.vertical, 5)
+                                    GameRow(game: g, store: store)
+                                        .padding(.horizontal, 10).padding(.vertical, 3)
                                 }
                             }
                         }
@@ -248,9 +372,11 @@ struct GameListView: View {
             }
 
             Divider()
-            HStack {
-                Text("Out-of-market: NFL Sunday Ticket on YouTube TV")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
+            HStack(spacing: 10) {
+                Toggle("Hide finals", isOn: $store.hideFinals)
+                    .toggleStyle(.checkbox).font(.system(size: 10)).foregroundColor(.secondary)
+                Text("Right-click a game to star a team")
+                    .font(.system(size: 10)).foregroundColor(.secondary).lineLimit(1)
                 Spacer()
                 if let t = store.lastUpdated {
                     Text(t, style: .time).font(.system(size: 10)).foregroundColor(.secondary)
@@ -260,63 +386,101 @@ struct GameListView: View {
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
         }
-        .frame(width: 360, height: popoverHeight)
+        .frame(width: 370, height: popoverHeight)
         .onAppear { Task { await store.refresh() } }
     }
 
     private func dayLabel(_ d: Date) -> String {
         let cal = Calendar.current
         let f = DateFormatter(); f.dateFormat = "EEE, MMM d"
-        let dateStr = f.string(from: d)
-        if cal.isDateInToday(d) { return "TODAY  ·  \(dateStr.uppercased())" }
-        if cal.isDateInTomorrow(d) { return "TOMORROW  ·  \(dateStr.uppercased())" }
-        return f.string(from: d).uppercased()
+        let dateStr = f.string(from: d).uppercased()
+        if cal.isDateInToday(d) { return "TODAY  ·  \(dateStr)" }
+        if cal.isDateInTomorrow(d) { return "TOMORROW  ·  \(dateStr)" }
+        return dateStr
     }
 }
 
+// MARK: - Row
+
 struct GameRow: View {
     let game: Game
+    @ObservedObject var store: GameStore
+
+    private var fav: Bool { store.isFavorite(game) }
+    private var awayWon: Bool { game.isFinal && game.away.score > game.home.score }
+    private var homeWon: Bool { game.isFinal && game.home.score > game.away.score }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                TeamChip(team: game.away)
-                Text("@").font(.system(size: 11)).foregroundColor(.secondary)
-                TeamChip(team: game.home)
-                Spacer()
-                statusView
-            }
-            Text("\(game.venue) · \(game.cityState)")
-                .font(.system(size: 11)).foregroundColor(.secondary)
-                .lineLimit(1)
-            HStack(spacing: 5) {
-                ForEach(game.networks, id: \.self) { n in
-                    Pill(text: n, tint: .secondary)
+        HStack(spacing: 0) {
+            // team color stripe
+            LinearGradient(colors: [game.away.color, game.home.color], startPoint: .top, endPoint: .bottom)
+                .frame(width: 3)
+                .clipShape(Capsule())
+                .padding(.vertical, 2)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    TeamChip(team: game.away, emphasized: !game.isFinal || awayWon)
+                    Text("@").font(.system(size: 11)).foregroundColor(.secondary)
+                    TeamChip(team: game.home, emphasized: !game.isFinal || homeWon)
+                    Spacer(minLength: 4)
+                    statusView
                 }
-                ForEach(game.streams, id: \.name) { s in
-                    Button { NSWorkspace.shared.open(URL(string: s.url)!) } label: {
-                        Pill(text: s.name, tint: .accentColor)
+                HStack(spacing: 4) {
+                    Text("\(game.venue) · \(game.cityState)")
+                        .font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
+                    if let w = game.weather, !game.isFinal {
+                        Text("·").foregroundColor(.secondary)
+                        Text(w).font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1)
                     }
-                    .buttonStyle(.plain)
-                    .help("Open \(s.name)")
+                }
+                HStack(spacing: 5) {
+                    ForEach(game.networks, id: \.self) { n in Pill(text: n, tint: .secondary) }
+                    ForEach(game.streams, id: \.name) { s in
+                        Button { NSWorkspace.shared.open(URL(string: s.url)!) } label: {
+                            Pill(text: s.name, tint: .accentColor)
+                        }
+                        .buttonStyle(.plain).help("Open \(s.name)")
+                    }
+                    if fav {
+                        Spacer()
+                        Image(systemName: "star.fill").font(.system(size: 9)).foregroundColor(.yellow)
+                    }
                 }
             }
+            .padding(.leading, 8)
+        }
+        .padding(.horizontal, 6).padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(fav ? Color.yellow.opacity(0.10) : Color.clear)
+        )
+        .opacity(game.isFinal ? 0.6 : 1)
+        .contentShape(Rectangle())
+        .onTapGesture { if let l = game.link { NSWorkspace.shared.open(l) } }
+        .help("Open on ESPN")
+        .contextMenu {
+            ForEach(game.teams, id: \.abbr) { t in
+                Button(store.favorites.contains(t.abbr) ? "Unstar \(t.name)" : "Star \(t.name)") {
+                    store.toggleFavorite(t.abbr)
+                }
+            }
+            Divider()
+            if let l = game.link { Button("Open on ESPN") { NSWorkspace.shared.open(l) } }
         }
     }
 
     @ViewBuilder
     private var statusView: some View {
         if game.isLive {
-            HStack(spacing: 4) {
-                Circle().fill(Color.red).frame(width: 6, height: 6)
-                Text("\(game.away.score ?? "0")–\(game.home.score ?? "0")")
-                    .font(.system(size: 12, weight: .bold))
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("\(game.away.score)–\(game.home.score)")
+                    .font(.system(size: 13, weight: .bold)).foregroundColor(.red)
                 Text(game.detail).font(.system(size: 10)).foregroundColor(.secondary)
             }
         } else if game.isFinal {
-            HStack(spacing: 4) {
-                Text("\(game.away.score ?? "0")–\(game.home.score ?? "0")")
-                    .font(.system(size: 12, weight: .semibold))
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("\(game.away.score)–\(game.home.score)").font(.system(size: 13, weight: .semibold))
                 Text("Final").font(.system(size: 10)).foregroundColor(.secondary)
             }
         }
@@ -325,6 +489,7 @@ struct GameRow: View {
 
 struct TeamChip: View {
     let team: TeamInfo
+    var emphasized = true
     var body: some View {
         HStack(spacing: 4) {
             AsyncImage(url: team.logo) { img in
@@ -332,8 +497,14 @@ struct TeamChip: View {
             } placeholder: {
                 Circle().fill(Color.secondary.opacity(0.2))
             }
-            .frame(width: 18, height: 18)
-            Text(team.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+            .frame(width: 20, height: 20)
+            Text(team.name)
+                .font(.system(size: 13, weight: emphasized ? .semibold : .regular))
+                .foregroundColor(emphasized ? .primary : .secondary)
+                .lineLimit(1)
+            if !team.record.isEmpty {
+                Text(team.record).font(.system(size: 9)).foregroundColor(.secondary)
+            }
         }
     }
 }
@@ -348,5 +519,19 @@ struct Pill: View {
             .background(tint.opacity(0.15))
             .foregroundColor(tint == .secondary ? .primary : tint)
             .clipShape(Capsule())
+    }
+}
+
+final class Pulse: ObservableObject {
+    @Published var on = false
+}
+
+struct PulsingDot: View {
+    @StateObject private var pulse = Pulse()
+    var body: some View {
+        Circle().fill(Color.red).frame(width: 7, height: 7)
+            .opacity(pulse.on ? 1 : 0.3)
+            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse.on)
+            .onAppear { pulse.on = true }
     }
 }
