@@ -1,30 +1,65 @@
 import SwiftUI
 import AppKit
+import Combine
 
 // MARK: - App
 
+// Plain AppKit entry point. SwiftUI's MenuBarExtra(.window) drifts away from
+// the menu bar on macOS 26 and floats over the desktop, and an App with only a
+// Settings scene opens an empty Settings window at launch. The status item and
+// popover live in AppDelegate; the list itself is still SwiftUI.
 @main
-struct NFLBarApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-    @StateObject private var store = GameStore()
-
-    var body: some Scene {
-        MenuBarExtra {
-            GameListView(store: store)
-        } label: {
-            if let t = store.menuBarText {
-                Label(t, systemImage: "football.fill")
-            } else {
-                Image(systemName: "football.fill")
-            }
-        }
-        .menuBarExtraStyle(.window)
+enum NFLBarMain {
+    @MainActor static func main() {
+        let delegate = AppDelegate()
+        let app = NSApplication.shared
+        app.delegate = delegate
+        app.run() // never returns, so `delegate` stays alive
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let store = GameStore()
+    private var statusItem: NSStatusItem!
+    private let popover = NSPopover()
+    private var titleSink: AnyCancellable?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = statusItem.button {
+            button.image = NSImage(systemSymbolName: "football.fill", accessibilityDescription: "NFL")
+            button.imagePosition = .imageLeading
+            button.target = self
+            button.action = #selector(togglePopover)
+        }
+
+        popover.behavior = .transient
+        popover.animates = false
+        let host = NSHostingController(rootView: GameListView(store: store))
+        host.sizingOptions = .preferredContentSize
+        popover.contentViewController = host
+
+        // objectWillChange fires before the new value lands, so read it a tick later.
+        titleSink = store.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor in self?.updateTitle() }
+        }
+        updateTitle()
+    }
+
+    private func updateTitle() {
+        statusItem.button?.title = store.menuBarText.map { " \($0)" } ?? ""
+    }
+
+    @objc private func togglePopover() {
+        if popover.isShown {
+            popover.performClose(nil)
+        } else if let button = statusItem.button {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
     }
 }
 
@@ -102,7 +137,33 @@ private struct Event: Decodable, Sendable {
     let weather: Weather?
 }
 private struct Link: Decodable, Sendable { let href: String }
-private struct Weather: Decodable, Sendable { let displayValue: String?; let temperature: Int? }
+// ESPN inconsistently swaps weather.displayValue and weather.conditionId: on
+// some events displayValue is the numeric condition id and the text sits in
+// conditionId. Decode both leniently and take whichever isn't a bare number.
+private struct Weather: Decodable, Sendable {
+    let displayValue: String?
+    let conditionId: String?
+    let temperature: Int?
+
+    var conditionText: String {
+        for v in [displayValue, conditionId] {
+            let t = (v ?? "").trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty, t.rangeOfCharacter(from: CharacterSet.decimalDigits.inverted) != nil { return t }
+        }
+        return ""
+    }
+
+    private enum Keys: String, CodingKey { case displayValue, conditionId, temperature }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: Keys.self)
+        func loose(_ k: Keys) -> String? {
+            (try? c.decode(String.self, forKey: k)) ?? (try? c.decode(Int.self, forKey: k)).map { String($0) }
+        }
+        displayValue = loose(.displayValue)
+        conditionId = loose(.conditionId)
+        temperature = try? c.decode(Int.self, forKey: .temperature)
+    }
+}
 private struct Competition: Decodable, Sendable {
     let venue: Venue?
     let broadcasts: [Broadcast]?
@@ -179,7 +240,16 @@ final class GameStore: ObservableObject {
 
     private func schedule() {
         timer?.invalidate()
-        let interval: TimeInterval = liveGames.isEmpty ? 15 * 60 : 60
+        let now = Date()
+        // ESPN flips a game to "in" when the ball is actually kicked, usually 5-10
+        // minutes after the listed time. A game past its listed kickoff that isn't
+        // live yet is about to be, so poll at the live rate until it flips.
+        let imminent = games.contains { $0.state == "pre" && $0.kickoff <= now && now.timeIntervalSince($0.kickoff) < 45 * 60 }
+        var interval: TimeInterval = liveGames.isEmpty && !imminent ? 15 * 60 : 60
+        // Wake just after the next listed kickoff so the live-rate polling starts on time.
+        if let next = games.first(where: { $0.state == "pre" && $0.kickoff > now }) {
+            interval = max(15, min(interval, next.kickoff.timeIntervalSince(now) + 20))
+        }
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             Task { await self?.refresh() }
         }
@@ -243,12 +313,13 @@ final class GameStore: ObservableObject {
 
                 var weather: String? = nil
                 if comp.venue?.indoor != true, let w = ev.weather, let t = w.temperature {
-                    weather = "\(t)° \(w.displayValue ?? "")".trimmingCharacters(in: .whitespaces)
+                    weather = "\(t)° \(w.conditionText)".trimmingCharacters(in: .whitespaces)
                 }
 
                 let state = comp.status?.type.state ?? "pre"
                 let rawDetail = comp.status?.type.shortDetail ?? ""
-                let detail = state == "post" ? "Final" : rawDetail
+                // ESPN's own label for finished games: "Final", "Final/OT", "Postponed", "Canceled".
+                let detail = state == "post" && rawDetail.isEmpty ? "Final" : rawDetail
 
                 return Game(
                     id: ev.id,
@@ -309,7 +380,7 @@ struct GameListView: View {
         let secs = Int(g.kickoff.timeIntervalSinceNow)
         guard secs > 0 else { return nil }
         let h = secs / 3600, m = (secs % 3600) / 60
-        let when = h > 24 ? "in \(h / 24)d \(h % 24)h" : h > 0 ? "in \(h)h \(m)m" : "in \(m)m"
+        let when = h >= 24 ? "in \(h / 24)d \(h % 24)h" : h > 0 ? "in \(h)h \(m)m" : "in \(m)m"
         return "Next: \(g.away.name) @ \(g.home.name) \(when)"
     }
 
@@ -481,7 +552,7 @@ struct GameRow: View {
         } else if game.isFinal {
             VStack(alignment: .trailing, spacing: 1) {
                 Text("\(game.away.score)–\(game.home.score)").font(.system(size: 13, weight: .semibold))
-                Text("Final").font(.system(size: 10)).foregroundColor(.secondary)
+                Text(game.detail).font(.system(size: 10)).foregroundColor(.secondary)
             }
         }
     }
