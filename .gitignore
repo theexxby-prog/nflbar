@@ -2,3 +2,5 @@
 dist/
 *.zip
 .DS_Store
+.claude/settings.local.json
+.claude/.last-deploy
