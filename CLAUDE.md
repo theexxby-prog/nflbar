@@ -44,9 +44,14 @@ next four days, with networks, streaming links, scores and weather. All the code
   the condition *text*, so the swapped-fields fix still applies) or "Indoors", and odds. Finals dim, the
   loser greys out, and the strip shows the line score. Starred teams: yellow ring on the block, yellow
   card border, sorted first. Header: week, live count or countdown, a filter menu (Hide finals, Quit),
-  refresh (spins while loading). Menu-bar title: live score with a football glyph before the team with
-  the ball, monospaced digits, starred games first and taking turns every 8 s when 2+ starred games are
-  live; else today's kickoff; else the glyph only.
+  refresh (spins while loading).
+- **Menu bar since 1.3.1: icon only.** Vishal: menu-bar space is premium. The status item is a small
+  brown leather football drawn in code (`AppDelegate.footballIcon()`, a coloured non-template 18pt
+  vector image, so it's brown in light and dark bars). No title text by default. The filter menu has
+  **"Show live score in menu bar"** (UserDefaults `showLiveScore`, default off): when on, the compact
+  score ("KC 21–17 LV", monospaced digits) shows next to the ball only while a game is live, starred
+  games first and taking turns every 8 s when 2+ starred games are live. No countdown or kickoff text
+  in the bar any more (the countdown lives in the popover header).
 - **Fetching since 1.3.0:** own ephemeral URLSession (10 s request / 20 s resource timeout), one retry
   with jitter per day. A failed day keeps the games it showed last time; if all five fail, the list
   stays and the footer says "Couldn't reach ESPN · showing <time>" (empty list: a full message).
@@ -80,13 +85,15 @@ cloud sessions at claude.ai/code. A cloud session sees only this repo, not the M
 
 ## Current state
 _Updated 2026-10-02 from the Mac (1.3.0 "Broadcast" redesign)._
-- **Live: 1.3.0** at /Applications/NFLBar.app (signed, notarized, stapled) and GitHub release v1.3.0.
+- **Live: 1.3.1** at /Applications/NFLBar.app (signed, notarized, stapled) and GitHub release v1.3.1.
+  1.3.1 (same day as 1.3.0): icon-only menu bar with the brown football, live score behind a toggle
+  (default off). The rest is 1.3.0's Broadcast redesign.
 - Also fixed: ESPN's "NFL Net" label now maps to NFL+ (mirrored in nfl-codebase-fyi); the two fetch
   problems listed here before (silent empty days, no timeout/retry); the stale README and the old path
   in `build_release.command`.
 - Tested with the debug build: real ESPN data for Oct 2–6 (light and dark), an illustrative live
   fixture (real Week 4 games with an injected `situation` block: KC 21–17 LV Q3 4:12, DEN 10–13 SF in the
-  red zone) for the drive strip, win-probability line, possession glyph and menu-bar title, and an
+  red zone) for the drive strip, win-probability line and possession glyph, and an
   all-days-fail fixture. **Not yet seen with a real live game** (first chance: Sunday Oct 4). Screenshot
   hooks used for testing were removed before the release build.
 - **Open / next:** watch the first real live Sunday: confirm `possessionText` and the win probability

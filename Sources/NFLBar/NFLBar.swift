@@ -32,7 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "football.fill", accessibilityDescription: "NFL")
+            button.image = Self.footballIcon()
             button.imagePosition = .imageLeading
             button.target = self
             button.action = #selector(togglePopover)
@@ -48,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         titleSink = store.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in self?.updateTitle() }
         }
-        // With two or more starred live games the title takes turns, 8 s each.
+        // With two or more starred live games the score takes turns, 8 s each.
         rotateTimer = Timer.scheduledTimer(withTimeInterval: 8, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -59,26 +59,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateTitle()
     }
 
+    /// Menu-bar space is precious: the ball alone, plus the live score only if
+    /// "Show live score in menu bar" is on and a game is live.
     private func updateTitle() {
         guard let button = statusItem.button else { return }
-        guard let title = store.menuBarTitle(rotation: rotateIndex) else {
+        guard store.showLiveScore, let title = store.liveScoreTitle(rotation: rotateIndex) else {
             button.attributedTitle = NSAttributedString(string: "")
+            button.imagePosition = .imageOnly
             return
         }
-        // Monospaced digits so a ticking clock doesn't make the item jitter.
+        // Monospaced digits so a changing score doesn't make the item jitter.
         let font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.menuBarFont(ofSize: 0).pointSize, weight: .regular)
-        let out = NSMutableAttributedString(string: " ", attributes: [.font: font])
-        for (i, part) in title.parts.enumerated() {
-            if i == title.possessionIndex, let ball = NSImage(systemSymbolName: "football.fill", accessibilityDescription: "Has the ball") {
-                let a = NSTextAttachment()
-                a.image = ball.withSymbolConfiguration(.init(pointSize: 8, weight: .regular))
-                a.bounds = CGRect(x: 0, y: 1, width: 9, height: 6)
-                out.append(NSAttributedString(attachment: a))
-                out.append(NSAttributedString(string: " ", attributes: [.font: font]))
+        button.imagePosition = .imageLeading
+        button.attributedTitle = NSAttributedString(string: " " + title, attributes: [.font: font])
+    }
+
+    /// A small brown leather football: a coloured (not template) image, so it stays brown
+    /// in light and dark menu bars. Drawn as vectors, so it's crisp at any scale.
+    static func footballIcon() -> NSImage {
+        let img = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            ctx.translateBy(x: 9, y: 9)
+            ctx.rotate(by: .pi / 9) // a slight tilt, like a ball in flight
+            // The ball: a lens from tip to tip.
+            let ball = CGMutablePath()
+            ball.move(to: CGPoint(x: -8, y: 0))
+            ball.addCurve(to: CGPoint(x: 8, y: 0), control1: CGPoint(x: -4.5, y: 6.6), control2: CGPoint(x: 4.5, y: 6.6))
+            ball.addCurve(to: CGPoint(x: -8, y: 0), control1: CGPoint(x: 4.5, y: -6.6), control2: CGPoint(x: -4.5, y: -6.6))
+            ball.closeSubpath()
+            ctx.saveGState()
+            ctx.addPath(ball); ctx.clip()
+            let brown = [CGColor(red: 0.66, green: 0.36, blue: 0.17, alpha: 1), CGColor(red: 0.42, green: 0.21, blue: 0.08, alpha: 1)]
+            if let g = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: brown as CFArray, locations: [0, 1]) {
+                ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: 5), end: CGPoint(x: 0, y: -5), options: [])
             }
-            out.append(NSAttributedString(string: part, attributes: [.font: font]))
+            // White stripes near each tip.
+            ctx.setStrokeColor(CGColor(gray: 1, alpha: 1))
+            ctx.setLineWidth(1.1)
+            for x in [-5.2, 5.2] {
+                ctx.move(to: CGPoint(x: x, y: -5)); ctx.addQuadCurve(to: CGPoint(x: x, y: 5), control: CGPoint(x: x * 0.82, y: 0))
+            }
+            ctx.strokePath()
+            ctx.restoreGState()
+            // Outline.
+            ctx.addPath(ball)
+            ctx.setStrokeColor(CGColor(red: 0.27, green: 0.13, blue: 0.05, alpha: 1))
+            ctx.setLineWidth(0.7)
+            ctx.strokePath()
+            // Laces: a seam with four stitches.
+            ctx.setStrokeColor(CGColor(gray: 1, alpha: 1))
+            ctx.setLineWidth(0.9)
+            ctx.setLineCap(.round)
+            ctx.move(to: CGPoint(x: -2.6, y: 1.6)); ctx.addLine(to: CGPoint(x: 2.6, y: 1.6))
+            for x in [-1.8, -0.6, 0.6, 1.8] {
+                ctx.move(to: CGPoint(x: x, y: 0.5)); ctx.addLine(to: CGPoint(x: x, y: 2.7))
+            }
+            ctx.strokePath()
+            return true
         }
-        button.attributedTitle = out
+        img.isTemplate = false
+        img.accessibilityDescription = "NFL"
+        return img
     }
 
     @objc private func togglePopover() {
@@ -384,6 +425,10 @@ final class GameStore: ObservableObject {
     @Published var hideFinals: Bool {
         didSet { UserDefaults.standard.set(hideFinals, forKey: "hideFinals") }
     }
+    /// Off by default: the menu bar shows just the ball.
+    @Published var showLiveScore: Bool {
+        didSet { UserDefaults.standard.set(showLiveScore, forKey: "showLiveScore") }
+    }
 
     private var timer: Timer?
 
@@ -399,6 +444,7 @@ final class GameStore: ObservableObject {
     init() {
         favorites = Set(UserDefaults.standard.stringArray(forKey: "favorites") ?? [])
         hideFinals = UserDefaults.standard.bool(forKey: "hideFinals")
+        showLiveScore = UserDefaults.standard.bool(forKey: "showLiveScore")
         Task { await refresh() }
     }
 
@@ -422,30 +468,15 @@ final class GameStore: ObservableObject {
 
     var nextGame: Game? { ordered(games.filter { $0.state == "pre" && $0.kickoff > Date() }).first }
 
-    struct MenuTitle { let parts: [String]; let possessionIndex: Int? }
-
-    /// What to print in the menu bar. A live game (starred first, taking turns when
-    /// several starred games are live), else today's kickoff, else nothing (just the glyph).
-    func menuBarTitle(rotation: Int) -> MenuTitle? {
+    /// The compact live score for the menu bar ("KC 21–17 LV"), starred games first and
+    /// taking turns when several starred games are live. Nil when nothing is live.
+    func liveScoreTitle(rotation: Int) -> String? {
         let live = liveGames
-        if !live.isEmpty {
-            let starred = live.filter(isFavorite)
-            let pool = starred.count >= 2 ? starred : [live[0]]
-            let g = pool[rotation % pool.count]
-            let ball = g.possession?.id
-            let parts = ["\(g.away.abbr) \(g.away.score)–\(g.home.score) \(g.home.abbr) · \(g.clockLabel)"]
-            // Put the football glyph in front of the team with the ball.
-            if ball == g.away.id { return MenuTitle(parts: parts, possessionIndex: 0) }
-            if ball == g.home.id {
-                return MenuTitle(parts: ["\(g.away.abbr) \(g.away.score)–\(g.home.score) ", "\(g.home.abbr) · \(g.clockLabel)"], possessionIndex: 1)
-            }
-            return MenuTitle(parts: parts, possessionIndex: nil)
-        }
-        let upcoming = ordered(games.filter { $0.state == "pre" })
-        if let g = upcoming.first, Calendar.current.isDateInToday(g.kickoff) || isFavorite(g) && g.kickoff.timeIntervalSinceNow < 6 * 3600 {
-            return MenuTitle(parts: ["\(g.away.abbr) @ \(g.home.abbr) \(Self.shortTime(g.kickoff))"], possessionIndex: nil)
-        }
-        return nil
+        guard !live.isEmpty else { return nil }
+        let starred = live.filter(isFavorite)
+        let pool = starred.count >= 2 ? starred : [live[0]]
+        let g = pool[rotation % pool.count]
+        return "\(g.away.abbr) \(g.away.score)–\(g.home.score) \(g.home.abbr)"
     }
 
     static func shortTime(_ d: Date) -> String {
@@ -714,6 +745,7 @@ struct GameListView: View {
                 .lineLimit(1)
             Menu {
                 Toggle("Hide finals", isOn: $store.hideFinals)
+                Toggle("Show live score in menu bar", isOn: $store.showLiveScore)
                 Divider()
                 Text("Right-click a game to star a team")
                 Divider()

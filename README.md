@@ -2,13 +2,13 @@
 
 A small macOS menu bar app that shows NFL games for today and the next four days as TV-style scorebugs: team colours and logos, records, scores, the drive (who has the ball, down and distance, red zone), win probability, odds, weather, and on every card the TV network and where to stream it. Click a streaming button to open the service.
 
-While a game is live the menu bar shows its score and clock (`KC 21–17 LV · Q3 4:12`), starred teams first. Right-click a game to star a team.
+The menu bar shows just a small brown football. If you want the score up there too, turn on **Show live score in menu bar** in the popover's filter menu: while a game is live it shows the score next to the ball (`KC 21–17 LV`), starred teams first. Right-click a game to star a team.
 
 ## Install
 
 1. Download `NFLBar-x.y.z.zip` from the [latest release](../../releases/latest).
 2. Unzip and drag `NFLBar.app` to `/Applications`.
-3. Open it. A football icon appears in the menu bar. There's no Dock icon.
+3. Open it. A brown football appears in the menu bar. There's no Dock icon.
 4. Optional: System Settings > General > Login Items > add NFLBar to launch at login.
 
 Requires macOS 13 or later. Signed and notarized, so it opens without Gatekeeper warnings.
