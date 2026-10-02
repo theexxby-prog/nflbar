@@ -1,8 +1,8 @@
 # NFLBar
 
-A tiny macOS menu bar app that shows NFL games for today and the next four days: who's playing, where, what network it's on, and where to stream it. Click a streaming pill to open the service.
+A small macOS menu bar app that shows NFL games for today and the next four days as TV-style scorebugs: team colours and logos, records, scores, the drive (who has the ball, down and distance, red zone), win probability, odds, weather, and on every card the TV network and where to stream it. Click a streaming button to open the service.
 
-![screenshot](screenshot.png)
+While a game is live the menu bar shows its score and clock (`KC 21–17 LV · Q3 4:12`), starred teams first. Right-click a game to star a team.
 
 ## Install
 
@@ -16,7 +16,7 @@ Requires macOS 13 or later. Signed and notarized, so it opens without Gatekeeper
 ## Build from source
 
 ```bash
-git clone https://github.com/YOUR-USER/nflbar.git
+git clone https://github.com/theexxby-prog/nflbar.git
 cd nflbar
 swift build -c release
 .build/release/NFLBar
@@ -26,7 +26,7 @@ Needs Xcode Command Line Tools (`xcode-select --install`).
 
 ## How it works
 
-Schedule, venue, broadcast and score data come from ESPN's public scoreboard endpoint. The app polls every 15 minutes and on each open. Streaming links are a static map from network to service (NBC to Peacock, CBS to Paramount+, FOX to Fox One, ESPN/ABC to the ESPN app, Prime Video, NFL Network to NFL+, Netflix, YouTube).
+Schedule, venue, broadcast, odds and score data come from ESPN's public scoreboard endpoint. The app polls every 15 minutes when nothing is on, every 60 seconds while a game is live (and for 45 minutes after a listed kickoff, until ESPN flips it to live), and on each open. Requests time out after 10 seconds and retry once; a day that fails keeps what it showed last time. Streaming links are a static map from network to service (NBC to Peacock, CBS to Paramount+, FOX to Fox One, ESPN/ABC to the ESPN app, Prime Video, NFL Network to NFL+, Netflix, YouTube).
 
 ## Caveats
 

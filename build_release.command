@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds NFLBar.app, signs with Developer ID, notarizes, staples, and zips.
-# Run from anywhere: ~/Projects/NFLBar/build_release.command
+# Run from anywhere: ~/dev/nflbar/build_release.command 1.3.0  (always pass the version)
 set -e
 cd "$(dirname "$0")"
 
