@@ -2,6 +2,13 @@ import SwiftUI
 import AppKit
 import Combine
 
+/// ESPN strings become URLs only when they are plain web links, so a feed glitch can never
+/// make a click open a file or another app's URL scheme.
+func webURL(_ s: String) -> URL? {
+    guard let u = URL(string: s), let scheme = u.scheme?.lowercased(), scheme == "https" || scheme == "http", u.host != nil else { return nil }
+    return u
+}
+
 // MARK: - App
 
 // Plain AppKit entry point. SwiftUI's MenuBarExtra(.window) drifts away from
@@ -588,7 +595,7 @@ final class GameStore: ObservableObject {
                 id: c?.team.id ?? "",
                 name: c?.team.shortDisplayName ?? c?.team.displayName ?? "?",
                 abbr: c?.team.abbreviation ?? "",
-                logo: c?.team.logo.flatMap { URL(string: $0) },
+                logo: c?.team.logo.flatMap { webURL($0) },
                 score: Int(c?.score ?? "") ?? 0,
                 record: c?.records?.first { $0.type == "total" }?.summary ?? "",
                 colorHex: c?.team.color,
@@ -628,7 +635,7 @@ final class GameStore: ObservableObject {
             situation: situation,
             odds: comp.odds?.first?.details,
             overUnder: comp.odds?.first?.overUnder,
-            link: ev.links?.first.flatMap { URL(string: $0.href) }
+            link: ev.links?.first.flatMap { webURL($0.href) }
         )
     }
 }
@@ -1027,8 +1034,7 @@ struct TeamRow: View {
                 Text("\(team.score)")
                     .font(.system(size: 18, weight: lost ? .medium : .bold, design: .rounded).monospacedDigit())
                     .foregroundColor(lost ? .secondary : .primary)
-                    .contentTransition(.numericText())
-                    .animation(.default, value: team.score)
+                    .modifier(ScoreRoll(value: team.score))
                     .frame(width: 44, alignment: .trailing)
                     .padding(.trailing, 12)
             }
@@ -1085,16 +1091,35 @@ struct WatchButton: View {
     }
 }
 
+/// Scores roll like an odometer: only the digits that change move, and on macOS 14+ they
+/// roll up when the score goes up. Reduce Motion turns it into a plain swap.
+struct ScoreRoll: ViewModifier {
+    let value: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    func body(content: Content) -> some View {
+        if reduceMotion {
+            content
+        } else if #available(macOS 14, *) {
+            content.contentTransition(.numericText(value: Double(value)))
+                .animation(.spring(response: 0.45, dampingFraction: 0.8), value: value)
+        } else {
+            content.contentTransition(.numericText())
+                .animation(.spring(response: 0.45, dampingFraction: 0.8), value: value)
+        }
+    }
+}
+
 final class Pulse: ObservableObject {
     @Published var on = false
 }
 
 struct PulsingDot: View {
     @StateObject private var pulse = Pulse()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
         Circle().fill(Color.red).frame(width: 7, height: 7)
-            .opacity(pulse.on ? 1 : 0.3)
-            .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse.on)
+            .opacity(reduceMotion || pulse.on ? 1 : 0.3)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: pulse.on)
             .onAppear { pulse.on = true }
     }
 }

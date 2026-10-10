@@ -84,18 +84,14 @@ cloud sessions at claude.ai/code. A cloud session sees only this repo, not the M
    it under "Not deployed yet" so the next Mac session ships it.
 
 ## Current state
-_Updated 2026-10-02 from the Mac (1.3.0 "Broadcast" redesign)._
-- **Live: 1.3.1** at /Applications/NFLBar.app (signed, notarized, stapled) and GitHub release v1.3.1.
-  1.3.1 (same day as 1.3.0): icon-only menu bar with the brown football, live score behind a toggle
-  (default off). The rest is 1.3.0's Broadcast redesign.
-- Also fixed: ESPN's "NFL Net" label now maps to NFL+ (mirrored in nfl-codebase-fyi); the two fetch
-  problems listed here before (silent empty days, no timeout/retry); the stale README and the old path
-  in `build_release.command`.
-- Tested with the debug build: real ESPN data for Oct 2–6 (light and dark), an illustrative live
-  fixture (real Week 4 games with an injected `situation` block: KC 21–17 LV Q3 4:12, DEN 10–13 SF in the
-  red zone) for the drive strip, win-probability line and possession glyph, and an
-  all-days-fail fixture. **Not yet seen with a real live game** (first chance: Sunday Oct 4). Screenshot
-  hooks used for testing were removed before the release build.
-- **Open / next:** watch the first real live Sunday: confirm `possessionText` and the win probability
-  arrive as expected; if ESPN omits `possessionText`, the field bar falls back to `downDistanceText`.
-  The PWA doesn't show the new live fields yet (see its CLAUDE.md).
+_Updated 2026-10-10 from the Mac (overnight motion pass)._
+- **Live: 1.3.2** at /Applications/NFLBar.app (signed, notarized, stapled, Gatekeeper OK, relaunched) and
+  GitHub release v1.3.2. 1.3.1 backed up in the session scratchpad only.
+- 1.3.2: scores roll like an odometer (`ScoreRoll` modifier: `.numericText(value:)` on macOS 14+, so digits
+  roll up when a score rises; plain `.numericText()` on 13; a 0.45 s spring). Reduce Motion turns the roll
+  into a plain swap and stops the live dot pulsing. ESPN game links and logo URLs now go through
+  `webURL()` (http/https only), so a feed glitch can't make a click open a file or another app's scheme.
+- Not done: the menu-bar title (the optional live score) is AppKit text, so it still swaps without a roll.
+  The roll itself was checked by build only, not watched in a live game (first chance: Sunday).
+- Open / next: watch a live Sunday (roll, `possessionText`, win probability). The PWA got the same roll
+  in the same pass (nfl-codebase-fyi).
