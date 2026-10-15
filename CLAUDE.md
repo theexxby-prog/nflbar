@@ -74,7 +74,10 @@ cloud sessions at claude.ai/code. A cloud session sees only this repo, not the M
 **Finish** (every session that changed anything, before saying you're done)
 1. Rewrite **Current state**: the date, where you worked (Mac, cloud or phone), what
    changed, what is live, what isn't deployed or tested yet, and what's next. Keep it
-   short and current, not a diary. Lasting rules and lessons go in the sections above it.
+   short and current, not a diary: the `_Updated …_` line is always the first line and is
+   rewritten every time; the section stays under about 25 lines; anything older than the
+   last two sessions moves to `CHANGELOG.md` (or is deleted; git has it). Lasting rules
+   and lessons go in the sections above it.
 2. Get the work onto `main`:
    - Mac: commit and `git push origin main`.
    - Cloud: you can push only your own `claude/...` branch. Push it, then

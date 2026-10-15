@@ -87,7 +87,7 @@ MARKER=.claude/.last-deploy
 if [ -f "$MARKER" ]; then
   LAST=$(tr -d '[:space:]' < "$MARKER" 2>/dev/null)
   if git cat-file -e "$LAST^{commit}" 2>/dev/null; then
-    N=$(git rev-list --count "$LAST..HEAD" -- . ':!*.md' ':!.claude' 2>/dev/null)
+    N=$(git rev-list --count "$LAST..HEAD" -- . ':!*.md' ':!.claude' ':!.gitignore' 2>/dev/null)
     if [ "${N:-0}" != 0 ]; then say "  ! $N code commit(s) since the last recorded deploy"
     else say "  - last recorded deploy matches this code"; fi
   fi
